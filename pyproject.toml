@@ -1,0 +1,30 @@
+[project]
+name = "finalproject-bazhenov-m25-555"
+version = "0.1.0"
+description = "A platform for tracking and simulating currency trading"
+authors = [
+    {name = "RRifen",email = "gorbaty.kit@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "prettytable (>=3.17.0,<4.0.0)"
+]
+
+[tool.poetry]
+packages = [
+    { include = "valutatrade_hub" },
+]
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.14.11,<0.15.0)"
+]
+
+[tool.poetry.scripts]
+project = "main:main" 
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
