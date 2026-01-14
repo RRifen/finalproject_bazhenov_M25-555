@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+from datetime import datetime
 
 
 class User:
@@ -67,15 +68,36 @@ class User:
 
         new_salt = secrets.token_hex(16)
 
-        password_hash = hashlib.sha256(new_password + new_salt).hexdigest()
+        password_hash = hashlib.sha256((new_password + new_salt).encode()).hexdigest()
 
         self._hashed_password = password_hash
         self._salt = new_salt
 
     def verify_password(self, password):
         """Проверяет введённый пароль на совпадение"""
-        password_hash = hashlib.sha256(password + self._salt).hexdigest()
+        password_hash = hashlib.sha256((password + self._salt).encode()).hexdigest()
         return password_hash == self._hashed_password
+
+    def to_dict(self):
+        """Преобразует пользователя в словарь для сохранения в JSON"""
+        return {
+            "user_id": self._user_id,
+            "username": self._username,
+            "hashed_password": self._hashed_password,
+            "salt": self._salt,
+            "registration_date": self._registration_date.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        """Создаёт объект User из словаря"""
+        return cls(
+            user_id=data["user_id"],
+            username=data["username"],
+            hashed_password=data["hashed_password"],
+            salt=data["salt"],
+            registration_date=datetime.fromisoformat(data["registration_date"]),
+        )
 
 
 class Wallet:
@@ -166,7 +188,7 @@ class Portfolio:
         return self._wallets[currency_code]
 
     def get_total_value(self, base_currency="USD"):
-        """Возвращает общую стоимость всех валют пользователя в указанной базовой валюте"""
+        """Возвращает общую стоимость всех валют пользователя в указанной базовой валюте"""  # noqa: E501
         if base_currency not in self.exchange_rates:
             raise ValueError(f"Курс для валюты {base_currency} не найден")
 
@@ -181,3 +203,30 @@ class Portfolio:
             total_value += value_in_base
 
         return total_value
+
+    @classmethod
+    def from_dict(cls, data, user=None):
+        """Создаёт объект Portfolio из словаря"""
+        wallets = {}
+        for currency_code, wallet_data in data.get("wallets", {}).items():
+            wallets[currency_code] = Wallet(
+                currency_code=currency_code,
+                balance=wallet_data.get("balance", 0.0)
+            )
+        return cls(
+            user_id=data["user_id"],
+            user=user,
+            wallets=wallets
+        )
+
+    def to_dict(self):
+        """Преобразует портфель в словарь для сохранения в JSON"""
+        wallets_dict = {}
+        for currency_code, wallet in self._wallets.items():
+            wallets_dict[currency_code] = {
+                "balance": wallet.balance
+            }
+        return {
+            "user_id": self._user_id,
+            "wallets": wallets_dict
+        }

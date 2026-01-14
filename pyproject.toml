@@ -22,8 +22,16 @@ dev = [
 ]
 
 [tool.poetry.scripts]
-project = "main:main" 
+project = "main:main"
 
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = ["venv", ".venv", "dist", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = [] 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
