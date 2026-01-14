@@ -87,6 +87,7 @@ def initialize_default_currencies():
     register_currency(FiatCurrency("Russian Ruble", "RUB", "Russia"))
     register_currency(CryptoCurrency("Bitcoin", "BTC", "SHA-256", 1.12e12))
     register_currency(CryptoCurrency("Ethereum", "ETH", "Ethash", 3.5e11))
+    register_currency(CryptoCurrency("Solana", "SOL", "Ed25519", 1)) 
 
 
 initialize_default_currencies()
