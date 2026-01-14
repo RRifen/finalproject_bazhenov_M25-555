@@ -2,6 +2,11 @@ import argparse
 import shlex
 import sys
 
+from valutatrade_hub.core.exceptions import (
+    ApiRequestError,
+    CurrencyNotFoundError,
+    InsufficientFundsError,
+)
 from valutatrade_hub.core.usecases import (
     buy_currency,
     get_rate,
@@ -55,6 +60,8 @@ def sell_command(args):
     try:
         result = sell_currency(args.currency, args.amount)
         print(result)
+    except InsufficientFundsError as e:
+        print(str(e))
     except ValueError as e:
         print(str(e))
 
@@ -64,13 +71,19 @@ def get_rate_command(args):
     try:
         result = get_rate(args.from_currency, args.to_currency)
         print(result)
+    except CurrencyNotFoundError as e:
+        print(str(e))
+        print("Используйте команду 'get-rate' для справки или проверьте список поддерживаемых валют")  # noqa: E501
+    except ApiRequestError as e:
+        print(str(e))
+        print("Повторите попытку позже или проверьте подключение к сети")
     except ValueError as e:
         print(str(e))
 
 
 def create_parser():
     """Создаёт и настраивает парсер аргументов"""
-    parser = argparse.ArgumentParser(description="ValutaTrade Hub CLI", exit_on_error=False)
+    parser = argparse.ArgumentParser(description="ValutaTrade Hub CLI", exit_on_error=False)  # noqa: E501
     subparsers = parser.add_subparsers(dest="command", help="Доступные команды")
 
     register_parser = subparsers.add_parser("register", help="Создать нового пользователя")  # noqa: E501

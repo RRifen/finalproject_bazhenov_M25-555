@@ -4,29 +4,45 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 
+from valutatrade_hub.core.currencies import get_currency
+from valutatrade_hub.core.decorators import log_action
+from valutatrade_hub.core.exceptions import (
+    ApiRequestError,
+    CurrencyNotFoundError,
+    InsufficientFundsError,
+)
 from valutatrade_hub.core.models import Portfolio, User
+from valutatrade_hub.core.settings import settings
 
-BASE_DIR = Path()
-DATA_DIR = BASE_DIR / "data"
-USERS_FILE = DATA_DIR / "users.json"
-PORTFOLIOS_FILE = DATA_DIR / "portfolios.json"
-RATES_FILE = DATA_DIR / "rates.json"
+DATA_DIR = Path(settings.get("data_dir", "data"))
+USERS_FILE = Path(settings.get("users_file", DATA_DIR / "users.json"))
+PORTFOLIOS_FILE = Path(settings.get("portfolios_file", DATA_DIR / "portfolios.json"))
+RATES_FILE = Path(settings.get("rates_file", DATA_DIR / "rates.json"))
+RATES_TTL_SECONDS = settings.get("rates_ttl_seconds", 300)
+DEFAULT_BASE_CURRENCY = settings.get("default_base_currency", "USD")
 
 _current_user = None
 
 
 def load_json_file(file_path):
-    """Загружает данные из JSON файла"""
-    if not file_path.exists():
-        return []
-    with open(file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Загружает данные из JSON файла (безопасная операция)"""
+    try:
+        if not file_path.exists():
+            return []
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        raise ValueError(f"Ошибка при чтении файла {file_path}: {e}")
 
 
 def save_json_file(file_path, data):
-    """Сохраняет данные в JSON файл"""
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    """Сохраняет данные в JSON файл (безопасная операция)"""
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except (IOError, OSError) as e:
+        raise ValueError(f"Ошибка при записи файла {file_path}: {e}")
 
 
 def get_next_user_id():
@@ -44,6 +60,7 @@ def is_username_taken(username):
     return any(user.get("username") == username for user in users)
 
 
+@log_action("REGISTER")
 def register_user(username, password):
     """Регистрирует нового пользователя"""
     if not username or not username.strip():
@@ -69,21 +86,28 @@ def register_user(username, password):
         registration_date=registration_date,
     )
 
-    users = load_json_file(USERS_FILE)
-    users.append(user.to_dict())
-    save_json_file(USERS_FILE, users)
+    try:
+        users = load_json_file(USERS_FILE)
+        users.append(user.to_dict())
+        save_json_file(USERS_FILE, users)
+    except ValueError as e:
+        raise ValueError(f"Ошибка при сохранении пользователя: {e}")
 
-    portfolios = load_json_file(PORTFOLIOS_FILE)
-    portfolio_data = {
-        "user_id": user_id,
-        "wallets": {},
-    }
-    portfolios.append(portfolio_data)
-    save_json_file(PORTFOLIOS_FILE, portfolios)
+    try:
+        portfolios = load_json_file(PORTFOLIOS_FILE)
+        portfolio_data = {
+            "user_id": user_id,
+            "wallets": {},
+        }
+        portfolios.append(portfolio_data)
+        save_json_file(PORTFOLIOS_FILE, portfolios)
+    except ValueError as e:
+        raise ValueError(f"Ошибка при создании портфеля: {e}")
 
     return user_id
 
 
+@log_action("LOGIN")
 def login_user(username, password):
     """Вход пользователя в систему"""
     global _current_user
@@ -122,7 +146,10 @@ def load_portfolio(user_id):
     return Portfolio.from_dict(portfolio_data, user=user)
 
 
-def show_portfolio(base_currency="USD"):
+def show_portfolio(base_currency=None):
+    """Отображает портфель текущего пользователя"""
+    if base_currency is None:
+        base_currency = DEFAULT_BASE_CURRENCY
     """Отображает портфель текущего пользователя"""
     user = get_current_user()
     if user is None:
@@ -165,20 +192,24 @@ def show_portfolio(base_currency="USD"):
 
 
 def save_portfolio(portfolio):
-    """Сохраняет портфель в JSON"""
-    portfolios = load_json_file(PORTFOLIOS_FILE)
-    portfolio_dict = portfolio.to_dict()
-    
-    for i, p in enumerate(portfolios):
-        if p.get("user_id") == portfolio._user_id:
-            portfolios[i] = portfolio_dict
-            save_json_file(PORTFOLIOS_FILE, portfolios)
-            return
-    
-    portfolios.append(portfolio_dict)
-    save_json_file(PORTFOLIOS_FILE, portfolios)
+    """Сохраняет портфель в JSON (безопасная операция)"""
+    try:
+        portfolios = load_json_file(PORTFOLIOS_FILE)
+        portfolio_dict = portfolio.to_dict()
+        
+        for i, p in enumerate(portfolios):
+            if p.get("user_id") == portfolio._user_id:
+                portfolios[i] = portfolio_dict
+                save_json_file(PORTFOLIOS_FILE, portfolios)
+                return
+        
+        portfolios.append(portfolio_dict)
+        save_json_file(PORTFOLIOS_FILE, portfolios)
+    except ValueError as e:
+        raise ValueError(f"Ошибка при сохранении портфеля: {e}")
 
 
+@log_action("BUY", verbose=True)
 def buy_currency(currency, amount):
     """Покупает валюту"""
     user = get_current_user()
@@ -201,8 +232,10 @@ def buy_currency(currency, amount):
     if amount <= 0:
         raise ValueError("'amount' должен быть положительным числом")
     
-    if currency not in Portfolio.exchange_rates:
-        raise ValueError(f"Не удалось получить курс для {currency}→USD")
+    try:
+        get_currency(currency)
+    except CurrencyNotFoundError:
+        raise
     
     portfolio = load_portfolio(user.user_id)
     if portfolio is None:
@@ -219,9 +252,12 @@ def buy_currency(currency, amount):
     
     save_portfolio(portfolio)
     
-    currency_rate = Portfolio.exchange_rates[currency]
-    base_rate = Portfolio.exchange_rates["USD"]
-    cost_in_usd = amount * (currency_rate / base_rate)
+    currency_rate = Portfolio.exchange_rates.get(currency)
+    if currency_rate:
+        base_rate = Portfolio.exchange_rates.get("USD", 1.0)
+        cost_in_usd = amount * (currency_rate / base_rate)
+    else:
+        cost_in_usd = None
     
     if currency in ["BTC", "ETH"]:
         amount_str = f"{amount:.4f}"
@@ -232,17 +268,23 @@ def buy_currency(currency, amount):
         old_balance_str = f"{old_balance:.2f}"
         new_balance_str = f"{new_balance:.2f}"
     
-    result = [
-        f"Покупка выполнена: {amount_str} {currency} "
-        f"по курсу {currency_rate:.2f} USD/{currency}",
+    result = [f"Покупка выполнена: {amount_str} {currency}"]
+    
+    if currency_rate:
+        result.append(f"по курсу {currency_rate:.2f} USD/{currency}")
+    
+    result.extend([
         "Изменения в портфеле:",
-        f"- {currency}: было {old_balance_str} → стало {new_balance_str}",
-        f"Оценочная стоимость покупки: {cost_in_usd:,.2f} USD"
-    ]
+        f"- {currency}: было {old_balance_str} → стало {new_balance_str}"
+    ])
+    
+    if cost_in_usd is not None:
+        result.append(f"Оценочная стоимость покупки: {cost_in_usd:,.2f} USD")
     
     return "\n".join(result)
 
 
+@log_action("SELL", verbose=True)
 def sell_currency(currency, amount):
     """Продаёт валюту"""
     user = get_current_user()
@@ -265,8 +307,10 @@ def sell_currency(currency, amount):
     if amount <= 0:
         raise ValueError("'amount' должен быть положительным числом")
     
-    if currency not in Portfolio.exchange_rates:
-        raise ValueError(f"Не удалось получить курс для {currency}→USD")
+    try:
+        get_currency(currency)
+    except CurrencyNotFoundError:
+        raise
     
     portfolio = load_portfolio(user.user_id)
     if portfolio is None:
@@ -279,24 +323,20 @@ def sell_currency(currency, amount):
     wallet = portfolio.get_wallet(currency)
     old_balance = wallet.balance
     
-    if amount > old_balance:
-        if currency in ["BTC", "ETH"]:
-            available_str = f"{old_balance:.4f}"
-            required_str = f"{amount:.4f}"
-        else:
-            available_str = f"{old_balance:.2f}"
-            required_str = f"{amount:.2f}"
-        raise ValueError(f"Недостаточно средств: доступно {available_str} {currency}, "
-                         f"требуется {required_str} {currency}")
-    
-    wallet.withdraw(amount)
+    try:
+        wallet.withdraw(amount)
+    except InsufficientFundsError:
+        raise
     new_balance = wallet.balance
     
     save_portfolio(portfolio)
     
-    currency_rate = Portfolio.exchange_rates[currency]
-    base_rate = Portfolio.exchange_rates["USD"]
-    revenue_in_usd = amount * (currency_rate / base_rate)
+    currency_rate = Portfolio.exchange_rates.get(currency)
+    if currency_rate:
+        base_rate = Portfolio.exchange_rates.get("USD", 1.0)
+        revenue_in_usd = amount * (currency_rate / base_rate)
+    else:
+        revenue_in_usd = None
     
     if currency in ["BTC", "ETH"]:
         amount_str = f"{amount:.4f}"
@@ -307,36 +347,54 @@ def sell_currency(currency, amount):
         old_balance_str = f"{old_balance:.2f}"
         new_balance_str = f"{new_balance:.2f}"
     
-    result = [
-        f"Продажа выполнена: {amount_str} {currency} по курсу {currency_rate:.2f} "
-        f"USD/{currency}",
+    result = [f"Продажа выполнена: {amount_str} {currency}"]
+    
+    if currency_rate:
+        result.append(f"по курсу {currency_rate:.2f} USD/{currency}")
+    
+    result.extend([
         "Изменения в портфеле:",
-        f"- {currency}: было {old_balance_str} → стало {new_balance_str}",
-        f"Оценочная выручка: {revenue_in_usd:,.2f} USD"
-    ]
+        f"- {currency}: было {old_balance_str} → стало {new_balance_str}"
+    ])
+    
+    if revenue_in_usd is not None:
+        result.append(f"Оценочная выручка: {revenue_in_usd:,.2f} USD")
     
     return "\n".join(result)
 
 
 def load_rates_cache():
-    """Загружает кеш курсов из JSON"""
-    if not RATES_FILE.exists():
-        return {}
-    with open(RATES_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Загружает кеш курсов из JSON (безопасная операция)"""
+    try:
+        if not RATES_FILE.exists():
+            return {}
+        with open(RATES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        raise ValueError(f"Ошибка при чтении кеша курсов: {e}")
 
 
 def save_rates_cache(rates_data):
-    """Сохраняет кеш курсов в JSON"""
-    with open(RATES_FILE, "w", encoding="utf-8") as f:
-        json.dump(rates_data, f, indent=2)
+    """Сохраняет кеш курсов в JSON (безопасная операция)"""
+    try:
+        RATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(RATES_FILE, "w", encoding="utf-8") as f:
+            json.dump(rates_data, f, indent=2)
+    except (IOError, OSError) as e:
+        raise ValueError(f"Ошибка при сохранении кеша курсов: {e}")
 
 
 def get_rate_from_api(from_currency, to_currency):
     """Получает курс валюты из API (заглушка, использует Portfolio.exchange_rates)"""
+    try:
+        get_currency(from_currency)
+        get_currency(to_currency)
+    except CurrencyNotFoundError as e:
+        raise ApiRequestError(f"Валюта '{e.code}' не поддерживается")
+    
     if (from_currency not in Portfolio.exchange_rates or 
         to_currency not in Portfolio.exchange_rates):
-        return None
+        raise ApiRequestError(f"Курс {from_currency}→{to_currency} недоступен")
     
     from_rate = Portfolio.exchange_rates[from_currency]
     to_rate = Portfolio.exchange_rates[to_currency]
@@ -345,12 +403,14 @@ def get_rate_from_api(from_currency, to_currency):
     return rate
 
 
-def is_rate_fresh(timestamp_str, max_age_minutes=5):
-    """Проверяет, свежий ли курс (моложе max_age_minutes минут)"""
+def is_rate_fresh(timestamp_str, max_age_seconds=None):
+    """Проверяет, свежий ли курс (моложе max_age_seconds секунд)"""
+    if max_age_seconds is None:
+        max_age_seconds = RATES_TTL_SECONDS
     try:
         timestamp = datetime.fromisoformat(timestamp_str)
         age = datetime.now() - timestamp
-        return age.total_seconds() < max_age_minutes * 60
+        return age.total_seconds() < max_age_seconds
     except (ValueError, TypeError):
         return False
 
@@ -364,24 +424,33 @@ def get_rate(from_currency, to_currency):
         raise ValueError("Код целевой валюты не может быть пустым")
     
     from_currency = from_currency.strip()
-
-    if from_currency != from_currency.upper():
-        raise ValueError("Код валюты должен состоять из прописных букв")
-
     to_currency = to_currency.strip()
 
+    if from_currency != from_currency.upper():
+        raise ValueError("Код исходной валюты должен состоять из прописных букв")
+    
     if to_currency != to_currency.upper():
-        raise ValueError("Код валюты должен состоять из прописных букв")
+        raise ValueError("Код целевой валюты должен состоять из прописных букв")
+    
+    try:
+        get_currency(from_currency)
+        get_currency(to_currency)
+    except CurrencyNotFoundError:
+        raise
     
     if from_currency == to_currency:
         return f"Курс {from_currency}→{to_currency}: 1.0 (одинаковые валюты)"
     
     cache_key = f"{from_currency}_{to_currency}"
-    rates_cache = load_rates_cache()
+    
+    try:
+        rates_cache = load_rates_cache()
+    except ValueError:
+        rates_cache = {}
     
     cached_rate = rates_cache.get(cache_key)
     
-    if cached_rate and is_rate_fresh(cached_rate.get("timestamp")):
+    if cached_rate and is_rate_fresh(cached_rate.get("timestamp"), RATES_TTL_SECONDS):
         rate = cached_rate.get("rate")
         timestamp_str = cached_rate.get("timestamp")
         timestamp = datetime.fromisoformat(timestamp_str)
@@ -396,21 +465,23 @@ def get_rate(from_currency, to_currency):
         ]
         return "\n".join(result)
     
-    rate = get_rate_from_api(from_currency, to_currency)
-    
-    if rate is None:
-        raise ValueError(f"Курс {from_currency}→{to_currency} недоступен. "
-                         "Повторите попытку позже.")
+    try:
+        rate = get_rate_from_api(from_currency, to_currency)
+    except ApiRequestError:
+        raise
     
     timestamp = datetime.now()
     timestamp_str = timestamp.isoformat()
     timestamp_formatted = timestamp.strftime("%Y-%m-%d %H:%M:%S")
     
-    rates_cache[cache_key] = {
-        "rate": rate,
-        "timestamp": timestamp_str
-    }
-    save_rates_cache(rates_cache)
+    try:
+        rates_cache[cache_key] = {
+            "rate": rate,
+            "timestamp": timestamp_str
+        }
+        save_rates_cache(rates_cache)
+    except ValueError:
+        pass
     
     reverse_rate = 1.0 / rate
     
