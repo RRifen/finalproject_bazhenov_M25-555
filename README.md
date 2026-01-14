@@ -354,3 +354,6 @@ make package-install
 - `requests` — HTTP запросы к внешним API
 - `prettytable` — форматирование таблиц (если используется)
 - `python-dotenv` — загрузка переменных окружения из `.env`
+
+## Asciinema
+<a href="https://asciinema.org/a/9d5mtiq93J9g6dXa" target="_blank"><img src="https://asciinema.org/a/9d5mtiq93J9g6dXa.svg" /></a>
