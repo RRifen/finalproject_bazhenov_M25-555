@@ -159,14 +159,6 @@ class Wallet:
 class Portfolio:
     """Класс управления всеми кошельками одного пользователя"""
 
-    exchange_rates = {
-        "USD": 1.0,
-        "EUR": 1.1,
-        "BTC": 50000.0,
-        "ETH": 3000.0,
-        "RUB": 0.011,
-    }
-
     def __init__(self, user_id, user=None, wallets=None):
         """Инициализация портфеля"""
         self._user_id = user_id
@@ -197,18 +189,23 @@ class Portfolio:
 
     def get_total_value(self, base_currency="USD"):
         """Возвращает общую стоимость всех валют пользователя в указанной базовой валюте"""  # noqa: E501
-        if base_currency not in self.exchange_rates:
-            raise ValueError(f"Курс для валюты {base_currency} не найден")
-
-        base_rate = self.exchange_rates[base_currency]
+        from valutatrade_hub.core.usecases import get_rate_from_cache
+        
+        base_rate = get_rate_from_cache(base_currency, "USD")
+        if base_rate is None:
+            base_rate = 1.0
+        
         total_value = 0.0
 
         for currency_code, wallet in self._wallets.items():
-            if currency_code not in self.exchange_rates:
-                continue
-            currency_rate = self.exchange_rates[currency_code]
-            value_in_base = wallet.balance * (currency_rate / base_rate)
-            total_value += value_in_base
+            currency_rate = get_rate_from_cache(currency_code, "USD")
+            if currency_rate is not None:
+                if base_currency != "USD":
+                    base_rate_for_currency = get_rate_from_cache(base_currency, "USD")
+                    if base_rate_for_currency is not None:
+                        currency_rate = currency_rate / base_rate_for_currency
+                value_in_base = wallet.balance * currency_rate
+                total_value += value_in_base
 
         return total_value
 

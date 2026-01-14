@@ -2,7 +2,6 @@ import functools
 from datetime import datetime
 
 from valutatrade_hub.core.logging_config import get_logger
-from valutatrade_hub.core.usecases import get_current_user
 
 logger = get_logger("actions")
 
@@ -12,6 +11,7 @@ def log_action(action_name, verbose=False):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            from valutatrade_hub.core.usecases import get_current_user
             timestamp = datetime.now().isoformat()
             user = get_current_user()
             username = user.username if user else None
@@ -66,11 +66,14 @@ def log_action(action_name, verbose=False):
                                 wallet = portfolio._wallets[currency]
                                 log_data["wallet_balance_after"] = wallet.balance
                                 
-                            from valutatrade_hub.core.models import Portfolio
-                            if currency and currency in Portfolio.exchange_rates:
-                                currency_rate = Portfolio.exchange_rates[currency]
-                                log_data["rate"] = currency_rate
-                                log_data["base"] = "USD"
+                            from valutatrade_hub.core.usecases import (
+                                get_rate_from_cache,
+                            )
+                            if currency:
+                                currency_rate = get_rate_from_cache(currency, "USD")
+                                if currency_rate is not None:
+                                    log_data["rate"] = currency_rate
+                                    log_data["base"] = "USD"
                     except Exception:
                         pass
                 

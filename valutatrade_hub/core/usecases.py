@@ -24,6 +24,36 @@ DEFAULT_BASE_CURRENCY = settings.get("default_base_currency", "USD")
 _current_user = None
 
 
+def get_rate_from_cache(currency_code, base_currency="USD"):
+    """Получает курс валюты из кеша"""
+    try:
+        from valutatrade_hub.parser_service.storage import load_rates_cache
+        cache = load_rates_cache()
+        pairs = cache.get("pairs", {})
+        
+        if currency_code == base_currency:
+            return 1.0
+        
+        pair_key = f"{currency_code}_{base_currency}"
+        if pair_key in pairs:
+            return pairs[pair_key]["rate"]
+        
+        if base_currency == "USD":
+            return None
+        
+        usd_pair = f"{currency_code}_USD"
+        base_usd_pair = f"{base_currency}_USD"
+        
+        if usd_pair in pairs and base_usd_pair in pairs:
+            currency_rate = pairs[usd_pair]["rate"]
+            base_rate = pairs[base_usd_pair]["rate"]
+            return currency_rate / base_rate
+        
+        return None
+    except (ValueError, ImportError):
+        return None
+
+
 def load_json_file(file_path):
     """Загружает данные из JSON файла (безопасная операция)"""
     try:
@@ -159,30 +189,44 @@ def show_portfolio(base_currency=None):
     if portfolio is None:
         raise ValueError("Портфель не найден")
     
-    if base_currency not in Portfolio.exchange_rates:
-        raise ValueError(f"Неизвестная базовая валюта '{base_currency}'")
-    
     if not portfolio.wallets:
         return f"Портфель пользователя '{user.username}' (база: {base_currency}):\nПортфель пуст"  # noqa: E501
     
-    base_rate = Portfolio.exchange_rates[base_currency]
     lines = [f"Портфель пользователя '{user.username}' (база: {base_currency}):"]
     
     total_value = 0.0
     for currency_code, wallet in sorted(portfolio.wallets.items()):
         balance = wallet.balance
-        if currency_code in Portfolio.exchange_rates:
-            currency_rate = Portfolio.exchange_rates[currency_code]
-            value_in_base = balance * (currency_rate / base_rate)
-            total_value += value_in_base
+        currency_rate_usd = get_rate_from_cache(currency_code, "USD")
+        if currency_rate_usd is not None:
+            if base_currency == "USD":
+                value_in_base = balance * currency_rate_usd
+            else:
+                base_rate_usd = get_rate_from_cache(base_currency, "USD")
+                if base_rate_usd is not None:
+                    currency_rate_base = currency_rate_usd / base_rate_usd
+                    value_in_base = balance * currency_rate_base
+                else:
+                    value_in_base = None
+            if value_in_base is not None:
+                total_value += value_in_base
+                if currency_code in ["BTC", "ETH"]:
+                    balance_str = f"{balance:.4f}"
+                else:
+                    balance_str = f"{balance:.2f}"
+                lines.append(f"- {currency_code}: {balance_str}  → "
+                             f"{value_in_base:.2f} {base_currency}")
+            else:
+                if currency_code in ["BTC", "ETH"]:
+                    balance_str = f"{balance:.4f}"
+                else:
+                    balance_str = f"{balance:.2f}"
+                lines.append(f"- {currency_code}: {balance_str}  → (курс не найден)")
+        else:
             if currency_code in ["BTC", "ETH"]:
                 balance_str = f"{balance:.4f}"
             else:
                 balance_str = f"{balance:.2f}"
-            lines.append(f"- {currency_code}: {balance_str}  → "
-                         f"{value_in_base:.2f} {base_currency}")
-        else:
-            balance_str = f"{balance:.2f}"
             lines.append(f"- {currency_code}: {balance_str}  → (курс не найден)")
     
     lines.append("-" * 40)
@@ -252,10 +296,9 @@ def buy_currency(currency, amount):
     
     save_portfolio(portfolio)
     
-    currency_rate = Portfolio.exchange_rates.get(currency)
-    if currency_rate:
-        base_rate = Portfolio.exchange_rates.get("USD", 1.0)
-        cost_in_usd = amount * (currency_rate / base_rate)
+    currency_rate = get_rate_from_cache(currency, "USD")
+    if currency_rate is not None:
+        cost_in_usd = amount * currency_rate
     else:
         cost_in_usd = None
     
@@ -331,10 +374,9 @@ def sell_currency(currency, amount):
     
     save_portfolio(portfolio)
     
-    currency_rate = Portfolio.exchange_rates.get(currency)
-    if currency_rate:
-        base_rate = Portfolio.exchange_rates.get("USD", 1.0)
-        revenue_in_usd = amount * (currency_rate / base_rate)
+    currency_rate = get_rate_from_cache(currency, "USD")
+    if currency_rate is not None:
+        revenue_in_usd = amount * currency_rate
     else:
         revenue_in_usd = None
     
@@ -385,22 +427,25 @@ def save_rates_cache(rates_data):
 
 
 def get_rate_from_api(from_currency, to_currency):
-    """Получает курс валюты из API (заглушка, использует Portfolio.exchange_rates)"""
+    """Получает курс валюты из API (использует кеш rates.json)"""
     try:
         get_currency(from_currency)
         get_currency(to_currency)
     except CurrencyNotFoundError as e:
         raise ApiRequestError(f"Валюта '{e.code}' не поддерживается")
     
-    if (from_currency not in Portfolio.exchange_rates or 
-        to_currency not in Portfolio.exchange_rates):
-        raise ApiRequestError(f"Курс {from_currency}→{to_currency} недоступен")
+    from_rate = get_rate_from_cache(from_currency, "USD")
+    to_rate = get_rate_from_cache(to_currency, "USD")
     
-    from_rate = Portfolio.exchange_rates[from_currency]
-    to_rate = Portfolio.exchange_rates[to_currency]
+    if from_rate is None or to_rate is None:
+        raise ApiRequestError(f"Курс {from_currency}→{to_currency} недоступен в кеше")
     
-    rate = to_rate / from_rate
-    return rate
+    if to_currency == "USD":
+        return from_rate
+    elif from_currency == "USD":
+        return 1.0 / to_rate
+    else:
+        return to_rate / from_rate
 
 
 def is_rate_fresh(timestamp_str, max_age_seconds=None):
